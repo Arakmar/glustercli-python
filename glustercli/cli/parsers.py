@@ -491,7 +491,6 @@ def parse_georep_status(data, volinfo):
     Merge Geo-rep status and Volume Info to get Offline Status
     and to sort the status in the same order as of Volume Info
     """
-    session_keys = set()
     gstatus = {}
 
     primary_string = 'primary'
@@ -510,18 +509,10 @@ def parse_georep_status(data, volinfo):
 
             # For each session, collect the details
             for session in sessions_el.findall("session"):
-                session_secondary = "{0}:{1}".format(mvol, session.find(
-                    "session_secondary").text)
-                session_keys.add(session_secondary)
-                gstatus[session_secondary] = {}
+                session_secondary = session.find("session_" + secondary_string).text
 
                 for pair in session.findall('pair'):
-                    primary_brick = "{0}:{1}".format(
-                        pair.find(primary_string + "_node").text,
-                        pair.find(primary_string + "_brick").text
-                    )
-
-                    gstatus[session_secondary][primary_brick] = {
+                    pairData = {
                         primary_string + "vol": mvol,
                         secondary_string + "vol": pair.find(secondary_string).text.split("::")[-1],
                         primary_string + "_node": pair.find(primary_string + "_node").text,
@@ -543,56 +534,21 @@ def parse_georep_status(data, volinfo):
                         "checkpoint_completion_time":
                         pair.find("checkpoint_completion_time").text
                     }
+                    if not mvol in gstatus:
+                        gstatus[mvol] = {}
+                    if not session_secondary in gstatus[mvol]:
+                        gstatus[mvol][session_secondary] = {
+                            secondary_string + "vol": pair.find(secondary_string).text.split("::")[-1],
+                            secondary_string + "_user": pair.find(secondary_string + "_user").text,
+                            secondary_string: pair.find(secondary_string).text,
+                            secondary_string + "_node": pair.find(secondary_string + "_node").text,
+                            "pairs": []
+                        }
+                    gstatus[mvol][session_secondary]["pairs"].append(pairData)
     except (ParseError, AttributeError, ValueError) as err:
         raise GlusterCmdOutputParseError(err)
 
-    # Get List of Bricks for each Volume
-    all_bricks = {}
-    for vol in volinfo:
-        all_bricks[vol["name"]] = vol["bricks"]
-
-    # For Each session Get Bricks info for the Volume and Populate
-    # Geo-rep status for that Brick
-    out = []
-    for session in session_keys:
-        mvol, _, secondary = session.split(":", 2)
-        secondary = secondary.replace("ssh://", "")
-        primary_bricks = all_bricks[mvol]
-        out.append([])
-        for brick in primary_bricks:
-            bname = brick["name"]
-            if gstatus.get(session) and gstatus[session].get(bname, None):
-                out[-1].append(gstatus[session][bname])
-            else:
-                # Offline Status
-                node, brick_path = bname.split(":")
-                if "@" not in secondary:
-                    secondary_user = "root"
-                else:
-                    secondary_user, _ = secondary.split("@")
-
-                out[-1].append({
-                    primary_string + "vol": mvol,
-                    secondary_string + "vol": secondary.split("::")[-1],
-                    primary_string + "_node": node,
-                    primary_string + "_brick": brick_path,
-                    secondary_string + "_user": secondary_user,
-                    secondary_string: secondary,
-                    secondary_string + "_node": "N/A",
-                    "status": "Offline",
-                    "crawl_status": "N/A",
-                    "entry": "N/A",
-                    "data": "N/A",
-                    "meta": "N/A",
-                    "failures": "N/A",
-                    "checkpoint_completed": "N/A",
-                    primary_string + "_node_uuid": brick["uuid"],
-                    "last_synced": "N/A",
-                    "checkpoint_time": "N/A",
-                    "checkpoint_completion_time": "N/A"
-                })
-    return out
-
+    return gstatus
 
 def parse_bitrot_scrub_status(data):
     raise NotImplementedError("Bitrot Scrub Status")
