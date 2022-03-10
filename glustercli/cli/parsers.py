@@ -2,10 +2,13 @@
 import copy
 import xml.etree.cElementTree as etree
 import math
+from packaging import version
 
 from .utils import RebalanceOperationType as ROT
 
 ParseError = etree.ParseError if hasattr(etree, 'ParseError') else SyntaxError
+
+from glustercli.cli.gluster_version import glusterfs_version
 
 
 class GlusterCmdOutputParseError(Exception):
@@ -491,35 +494,41 @@ def parse_georep_status(data, volinfo):
     session_keys = set()
     gstatus = {}
 
+    primary_string = 'primary'
+    secondary_string = 'secondary'
+    if version.parse(glusterfs_version()) < version.parse('10.0'):
+        primary_string = 'master'
+        secondary_string = 'slave'
+
     try:
         tree = etree.fromstring(data)
         # Get All Sessions
         for volume_el in tree.findall("geoRep/volume"):
             sessions_el = volume_el.find("sessions")
-            # Master Volume name if multiple Volumes
+            # Primary Volume name if multiple Volumes
             mvol = volume_el.find("name").text
 
             # For each session, collect the details
             for session in sessions_el.findall("session"):
-                session_slave = "{0}:{1}".format(mvol, session.find(
-                    "session_slave").text)
-                session_keys.add(session_slave)
-                gstatus[session_slave] = {}
+                session_secondary = "{0}:{1}".format(mvol, session.find(
+                    "session_secondary").text)
+                session_keys.add(session_secondary)
+                gstatus[session_secondary] = {}
 
                 for pair in session.findall('pair'):
-                    master_brick = "{0}:{1}".format(
-                        pair.find("master_node").text,
-                        pair.find("master_brick").text
+                    primary_brick = "{0}:{1}".format(
+                        pair.find(primary_string + "_node").text,
+                        pair.find(primary_string + "_brick").text
                     )
 
-                    gstatus[session_slave][master_brick] = {
-                        "mastervol": mvol,
-                        "slavevol": pair.find("slave").text.split("::")[-1],
-                        "master_node": pair.find("master_node").text,
-                        "master_brick": pair.find("master_brick").text,
-                        "slave_user": pair.find("slave_user").text,
-                        "slave": pair.find("slave").text,
-                        "slave_node": pair.find("slave_node").text,
+                    gstatus[session_secondary][primary_brick] = {
+                        primary_string + "vol": mvol,
+                        secondary_string + "vol": pair.find(secondary_string).text.split("::")[-1],
+                        primary_string + "_node": pair.find(primary_string + "_node").text,
+                        primary_string + "_brick": pair.find(primary_string + "_brick").text,
+                        secondary_string + "_user": pair.find(secondary_string + "_user").text,
+                        secondary_string: pair.find(secondary_string).text,
+                        secondary_string + "_node": pair.find(secondary_string + "_node").text,
                         "status": pair.find("status").text,
                         "crawl_status": pair.find("crawl_status").text,
                         "entry": pair.find("entry").text,
@@ -528,7 +537,7 @@ def parse_georep_status(data, volinfo):
                         "failures": pair.find("failures").text,
                         "checkpoint_completed": pair.find(
                             "checkpoint_completed").text,
-                        "master_node_uuid": pair.find("master_node_uuid").text,
+                        primary_string + "_node_uuid": pair.find(primary_string + "_node_uuid").text,
                         "last_synced": pair.find("last_synced").text,
                         "checkpoint_time": pair.find("checkpoint_time").text,
                         "checkpoint_completion_time":
@@ -546,30 +555,30 @@ def parse_georep_status(data, volinfo):
     # Geo-rep status for that Brick
     out = []
     for session in session_keys:
-        mvol, _, slave = session.split(":", 2)
-        slave = slave.replace("ssh://", "")
-        master_bricks = all_bricks[mvol]
+        mvol, _, secondary = session.split(":", 2)
+        secondary = secondary.replace("ssh://", "")
+        primary_bricks = all_bricks[mvol]
         out.append([])
-        for brick in master_bricks:
+        for brick in primary_bricks:
             bname = brick["name"]
             if gstatus.get(session) and gstatus[session].get(bname, None):
                 out[-1].append(gstatus[session][bname])
             else:
                 # Offline Status
                 node, brick_path = bname.split(":")
-                if "@" not in slave:
-                    slave_user = "root"
+                if "@" not in secondary:
+                    secondary_user = "root"
                 else:
-                    slave_user, _ = slave.split("@")
+                    secondary_user, _ = secondary.split("@")
 
                 out[-1].append({
-                    "mastervol": mvol,
-                    "slavevol": slave.split("::")[-1],
-                    "master_node": node,
-                    "master_brick": brick_path,
-                    "slave_user": slave_user,
-                    "slave": slave,
-                    "slave_node": "N/A",
+                    primary_string + "vol": mvol,
+                    secondary_string + "vol": secondary.split("::")[-1],
+                    primary_string + "_node": node,
+                    primary_string + "_brick": brick_path,
+                    secondary_string + "_user": secondary_user,
+                    secondary_string: secondary,
+                    secondary_string + "_node": "N/A",
                     "status": "Offline",
                     "crawl_status": "N/A",
                     "entry": "N/A",
@@ -577,7 +586,7 @@ def parse_georep_status(data, volinfo):
                     "meta": "N/A",
                     "failures": "N/A",
                     "checkpoint_completed": "N/A",
-                    "master_node_uuid": brick["uuid"],
+                    primary_string + "_node_uuid": brick["uuid"],
                     "last_synced": "N/A",
                     "checkpoint_time": "N/A",
                     "checkpoint_completion_time": "N/A"
